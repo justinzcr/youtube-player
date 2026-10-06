@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>YouTube Player</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    html, body, #container, #player {
+      width: 100%;
+      height: 100%;
+      background: #000;
+      overflow: hidden;
+    }
+
+    #player iframe {
+      width: 100%;
+      height: 100%;
+      border: none;
+    }
+
+    .error {
+      color: #fff;
+      font-family: Arial, sans-serif;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      text-align: center;
+      padding: 20px;
+    }
+  </style>
+</head>
+<body>
+  <div id="container">
+    <div id="player"></div>
+  </div>
+
+  <script>
+    const PLAYER_SOURCE = 'ytcm-player';
+    const VIDEO_ID_RE = /^[a-zA-Z0-9_-]{11}$/;
+
+    let player = null;
+    let pendingVideoId = null;
+    let activeVideoId = null;
+    let hasPlayed = false;
+
+    function isAllowedParent(origin) {
+      return origin.startsWith('chrome-extension://') || origin === window.location.origin;
+    }
+
+    function validVideoId(id) {
+      return typeof id === 'string' && VIDEO_ID_RE.test(id);
+    }
+
+    function notifyParent(payload) {
+      window.parent.postMessage({ source: PLAYER_SOURCE, ...payload }, '*');
+    }
+
+    function loadVideo(videoId) {
+      if (!validVideoId(videoId)) return;
+      activeVideoId = videoId;
+      hasPlayed = false;
+      if (player && typeof player.loadVideoById === 'function') {
+        player.loadVideoById(videoId);
+      } else {
+        pendingVideoId = videoId;
+      }
+    }
+
+    function notifyEnded() {
+      if (!hasPlayed || !activeVideoId) return;
+      hasPlayed = false;
+      notifyParent({ type: 'ended', videoId: activeVideoId });
+    }
+
+    function pauseVideo() {
+      try {
+        if (player && typeof player.pauseVideo === 'function') {
+          player.pauseVideo();
+        }
+      } catch (e) {}
+    }
+
+    window.addEventListener('message', (event) => {
+      if (!isAllowedParent(event.origin)) return;
+      const data = event.data;
+      if (!data || data.source !== PLAYER_SOURCE) return;
+
+      if (data.type === 'load') {
+        loadVideo(data.videoId);
+      } else if (data.type === 'pause' || data.type === 'stop') {
+        pauseVideo();
+      }
+    });
+
+    const urlParams = new URLSearchParams(window.location.search);
+    const initialVideoId = urlParams.get('v');
+    if (validVideoId(initialVideoId)) {
+      pendingVideoId = initialVideoId;
+      activeVideoId = initialVideoId;
+    }
+
+    window.onYouTubeIframeAPIReady = function() {
+      player = new YT.Player('player', {
+        host: 'https://www.youtube.com',
+        width: '100%',
+        height: '100%',
+        videoId: validVideoId(initialVideoId) ? initialVideoId : undefined,
+        playerVars: {
+          autoplay: 1,
+          rel: 0,
+          modestbranding: 1,
+          playsinline: 1,
+          enablejsapi: 1,
+          origin: window.location.origin
+        },
+        events: {
+          onReady: function() {
+            const iframe = player.getIframe && player.getIframe();
+            if (iframe) {
+              iframe.style.width = '100%';
+              iframe.style.height = '100%';
+              iframe.style.border = 'none';
+            }
+            if (pendingVideoId && pendingVideoId !== initialVideoId) {
+              loadVideo(pendingVideoId);
+            }
+            pendingVideoId = null;
+            notifyParent({ type: 'ready' });
+          },
+          onStateChange: function(event) {
+            const state = event && event.data;
+            if (state === 1 || state === 2) hasPlayed = true;
+            if (state === 0) notifyEnded();
+          }
+        }
+      });
+    };
+  </script>
+  <script src="https://www.youtube.com/iframe_api"></script>
+</body>
+</html>
